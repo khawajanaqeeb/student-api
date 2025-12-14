@@ -1,58 +1,65 @@
-from fastapi import FastAPI, HTTPException
-from sqlmodel import Field, SQLModel # Removed BaseModel import
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Depends
+from models import Student, StudentCreate
+from database import db_manager, get_session
+from sqlmodel import Session, select
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # on startup
+    db_manager.initialize_database()
+    yield
+    # on shutdown
+    # (add cleanup code here if needed)
 
-class Student(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    name: str
-    age: int
-    email: str
+app = FastAPI(lifespan=lifespan)
 
-# Demo students - now storing Student (SQLModel) objects
-students: list[Student] = [
-    Student(id=1, name="Fatima Zahra", age=20, email="fatima.zahra@example.com"),
-    Student(id=2, name="Ali Hassan", age=22, email="ali.hassan@example.com"),
-    Student(id=3, name="Ayesha Khan", age=21, email="ayesha.khan@example.com"),
-]
 
 @app.get("/")
 def home():
     return {"message": "Hello, form FAST Api!"}
 
-@app.get("/students")
-def get_students():
+@app.get("/students", response_model=list[Student])
+def get_students(session: Session = Depends(get_session)):
+    students = session.execute(select(Student)).scalars().all()
     return students
 
 @app.get("/students/{student_id}", response_model=Student)
-def get_student(student_id: int):
-    for student in students:
-        if student.id == student_id:
-            return student
-    raise HTTPException(status_code=404, detail="Student not found")
-
-@app.post("/students", response_model=Student)
-def create_student(student: Student):
-    new_id = max(s.id for s in students) + 1 if students else 1
-    student.id = new_id
-    students.append(student)
+def get_student(student_id: int, session: Session = Depends(get_session)):
+    student = session.get(Student, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
     return student
 
+@app.post("/students", response_model=Student)
+def create_student(student: StudentCreate, session: Session = Depends(get_session)):
+    db_student = Student.model_validate(student)
+    session.add(db_student)
+    session.commit()
+    session.refresh(db_student)
+    return db_student
+
 @app.put("/students/{student_id}", response_model=Student)
-def update_student(student_id: int, updated_student: Student):
-    for i, student in enumerate(students):
-        if student.id == student_id:
-            student.name = updated_student.name
-            student.age = updated_student.age
-            student.email = updated_student.email
-            return student
-    raise HTTPException(status_code=404, detail="Student not found")
+def update_student(student_id: int, updated_student: Student, session: Session = Depends(get_session)):
+    student = session.get(Student, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    student.name = updated_student.name
+    student.age = updated_student.age
+    student.email = updated_student.email
+    
+    session.add(student)
+    session.commit()
+    session.refresh(student)
+    return student
 
 @app.delete("/students/{student_id}")
-def delete_student(student_id: int):
-    global students
-    original_len = len(students)
-    students = [student for student in students if student.id != student_id]
-    if len(students) == original_len:
+def delete_student(student_id: int, session: Session = Depends(get_session)):
+    student = session.get(Student, student_id)
+    if not student:
         raise HTTPException(status_code=404, detail="Student not found")
+    
+    session.delete(student)
+    session.commit()
     return {"message": "Student deleted successfully"}
